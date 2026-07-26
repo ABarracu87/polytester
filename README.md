@@ -31,9 +31,13 @@ class MyStrategy(BaseStrategy):
     def on_market_state(self, market_state, positions):
         # market_state: {'timestamp', 'market_id', 'outcomes', 'prices', 'last_trade', 'is_open'}
         # positions: {outcome: {'size', 'entry_price', 'current_mark'}}
-        
-        if market_state['is_open'] and market_state['prices']['YES'] > 0.6:
-            return [Order(outcome='YES', side='SELL', size=100, price=None)]
+        #
+        # NOTE: outcome names come from the market — usually 'Yes'/'No', but
+        # multi-outcome markets have arbitrary names. Read them from
+        # market_state['outcomes'], don't hardcode 'YES'.
+        yes = market_state['outcomes'][0]
+        if market_state['is_open'] and market_state['prices'][yes] > 0.6:
+            return [Order(outcome=yes, side='SELL', size=100, price=None)]
         return []
 ```
 

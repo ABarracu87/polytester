@@ -3,7 +3,8 @@
 ## Installation
 
 ```bash
-cd /Users/andreabarracu/Documents/workspace/polytester
+git clone https://github.com/ABarracu87/polytester.git
+cd polytester
 pip install -e .
 ```
 
