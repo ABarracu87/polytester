@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polytester"
+version = "0.1.0"
+description = "An honest backtest harness for Polymarket prediction-market strategies"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["polymarket", "backtest", "prediction-markets", "trading", "quant"]
+authors = [{ name = "polytester contributors" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "pandas>=1.3.0",
+    "requests>=2.25.0",
+]
+
+[project.optional-dependencies]
+# httpx is only needed by the live-API smoke test (test_api_live.py)
+dev = [
+    "pytest>=6.0",
+    "httpx>=0.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/polytester"
+Documentation = "https://github.com/OWNER/polytester/blob/main/HARNESS_GUIDE.md"
+
+# Repo layout: the repository root itself is the `polytester` package (it holds
+# __init__.py), imported as `polytester` from the parent dir. Map the package
+# name onto the repo root ("") so `pip install .` installs it correctly.
+# The loose test_*.py files are scripts, not part of the installed package.
+[tool.setuptools]
+package-dir = { polytester = "." }
+packages = ["polytester", "polytester.strategies"]
+
+[tool.setuptools.package-data]
+polytester = ["*.md"]
