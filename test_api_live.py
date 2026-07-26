@@ -1,6 +1,13 @@
 """
 Test Polymarket API endpoints live.
 Run this to verify which endpoints work and what format they return.
+
+Endpoints under test (verified reality):
+  - Gamma  https://gamma-api.polymarket.com/markets      (market metadata)
+  - CLOB   https://clob.polymarket.com/prices-history     (per-outcome probability series)
+  - CLOB   https://clob.polymarket.com/book                (live orderbook, single token)
+  - CLOB   https://clob.polymarket.com/price               (live price, single token)
+  - CLOB   https://clob.polymarket.com/midpoint            (live midpoint, single token)
 """
 import sys
 try:
@@ -14,6 +21,34 @@ except ImportError:
 import json
 from datetime import datetime
 
+GAMMA = "https://gamma-api.polymarket.com/markets"
+CLOB = "https://clob.polymarket.com"
+
+
+def _loads(v):
+    """Gamma list fields (outcomes/outcomePrices/clobTokenIds) are JSON-encoded strings."""
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except (ValueError, TypeError):
+            return v
+    return v
+
+
+def _first_token_id():
+    """Fetch one market and return (market, single parsed CLOB token id str)."""
+    resp = httpx.get(GAMMA, params={"limit": 1, "active": True,
+                                    "order": "volume24hr", "ascending": False}, timeout=10)
+    resp.raise_for_status()
+    markets = resp.json()
+    if not markets:
+        return None, None
+    market = markets[0]
+    token_ids = _loads(market.get("clobTokenIds", "[]"))
+    if not token_ids or not isinstance(token_ids, list):
+        return market, None
+    return market, token_ids[0]
+
 
 def test_gamma_markets():
     """Test Gamma API markets endpoint."""
@@ -23,9 +58,9 @@ def test_gamma_markets():
 
     try:
         resp = httpx.get(
-            "https://gamma-api.polymarket.com/markets",
+            GAMMA,
             params={"limit": 2, "active": True, "order": "volume24hr", "ascending": False},
-            timeout=10
+            timeout=10,
         )
         resp.raise_for_status()
 
@@ -34,27 +69,76 @@ def test_gamma_markets():
         print(f"✓ Markets returned: {len(markets)}")
 
         if markets:
-            import json as _json
             m = markets[0]
-            # Gamma returns outcomes/outcomePrices/clobTokenIds as JSON strings
-            outcomes = _json.loads(m.get('outcomes', '[]'))
-            prices = _json.loads(m.get('outcomePrices', '[]'))
+            # Gamma returns outcomes/outcomePrices/clobTokenIds as JSON-encoded strings
+            outcomes = _loads(m.get("outcomes", "[]"))
+            prices = _loads(m.get("outcomePrices", "[]"))
+            token_ids = _loads(m.get("clobTokenIds", "[]"))
             print(f"\nFirst market sample:")
             print(f"  ID: {str(m.get('id'))[:20]}...")
             print(f"  Question: {str(m.get('question'))[:80]}")
             print(f"  Outcomes: {outcomes}")
             print(f"  Outcome prices: {prices}")
+            print(f"  CLOB token IDs: {[str(t)[:12] + '...' for t in token_ids]}")
+            print(f"  Closed at: {m.get('closedAt')}")
             print(f"  Active: {m.get('active')}")
 
-            # Check required fields
-            required = ['id', 'question', 'outcomes', 'outcomePrices', 'clobTokenIds']
+            # Check required fields (all present, as JSON-encoded strings)
+            required = ['id', 'question', 'outcomes', 'clobTokenIds', 'outcomePrices']
             missing = [k for k in required if k not in m]
             if missing:
                 print(f"  ⚠ Missing fields: {missing}")
-            else:
-                print(f"  ✓ All required fields present")
+                return False
+            print(f"  ✓ All required fields present")
 
         return True
+
+    except httpx.HTTPError as e:
+        print(f"✗ HTTP Error: {e}")
+        return False
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
+
+
+def test_clob_prices_history():
+    """Test CLOB API prices-history endpoint (the historical data source)."""
+    print("\n" + "=" * 80)
+    print("TEST 2: CLOB API - Prices-History")
+    print("=" * 80)
+
+    try:
+        print("Step 1: Fetching a market to get a token ID...")
+        market, token_id = _first_token_id()
+        if market is None:
+            print("✗ No active markets found")
+            return False
+        if not token_id:
+            print(f"✗ No CLOB token IDs. Available keys: {list(market.keys())}")
+            return False
+        print(f"✓ Market: {str(market['question'])[:60]}")
+        print(f"✓ Token ID: {str(token_id)[:20]}...")
+
+        print(f"\nStep 2: Fetching prices-history (interval=max, fidelity=60)...")
+        resp = httpx.get(
+            f"{CLOB}/prices-history",
+            params={"market": token_id, "interval": "max", "fidelity": 60},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"✓ Status: {resp.status_code}")
+        print(f"✓ Response keys: {list(data.keys())}")
+
+        history = data.get("history", [])
+        print(f"✓ History points: {len(history)}")
+        if history:
+            print(f"  First point: {history[0]}")   # {'t': epoch, 'p': prob}
+            print(f"  Last point:  {history[-1]}")
+        else:
+            print("  ⚠ Empty history (market may be too new or illiquid)")
+
+        return "history" in data
 
     except httpx.HTTPError as e:
         print(f"✗ HTTP Error: {e}")
@@ -65,59 +149,32 @@ def test_gamma_markets():
 
 
 def test_clob_book():
-    """Test CLOB API orderbook endpoint."""
+    """Test CLOB API orderbook endpoint (live, single token)."""
     print("\n" + "=" * 80)
-    print("TEST 2: CLOB API - Orderbook")
+    print("TEST 3: CLOB API - Orderbook")
     print("=" * 80)
 
     try:
-        # First get a market to extract token ID
-        print("Step 1: Fetching a market to get token ID...")
-        resp_markets = httpx.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"limit": 1, "active": True},
-            timeout=10
-        )
-        resp_markets.raise_for_status()
-
-        markets = resp_markets.json()
-        if not markets:
+        market, token_id = _first_token_id()
+        if market is None:
             print("✗ No active markets found")
             return False
-
-        import json as _json
-        market = markets[0]
-        # clobTokenIds is a JSON-ENCODED STRING, e.g. '["123...","456..."]'.
-        # Parse it, then use ONE token id — the CLOB endpoints 404 on a list.
-        token_ids = _json.loads(market.get('clobTokenIds', '[]'))
-        if not token_ids:
-            print("✗ No CLOB token IDs in market")
-            print(f"   Available keys: {list(market.keys())}")
+        if not token_id:
+            print(f"✗ No CLOB token IDs. Available keys: {list(market.keys())}")
             return False
+        print(f"✓ Token ID: {str(token_id)[:20]}...")
 
-        token_id = token_ids[0]
-        print(f"✓ Found market: {market['question'][:60]}")
-        print(f"✓ Token ID: {token_id[:20]}...")
-
-        # Now fetch the book
-        print(f"\nStep 2: Fetching orderbook for token {token_id[:20]}...")
-        resp_book = httpx.get(
-            "https://clob.polymarket.com/book",
-            params={"token_id": token_id},
-            timeout=10
-        )
-        resp_book.raise_for_status()
-
-        book = resp_book.json()
-        print(f"✓ Status: {resp_book.status_code}")
+        print(f"\nFetching orderbook...")
+        resp = httpx.get(f"{CLOB}/book", params={"token_id": token_id}, timeout=10)
+        resp.raise_for_status()
+        book = resp.json()
+        print(f"✓ Status: {resp.status_code}")
         print(f"✓ Response keys: {list(book.keys())}")
 
-        if 'bids' in book and book['bids']:
-            print(f"\n  Best bid: {book['bids'][0]}")
-        if 'asks' in book and book['asks']:
+        if book.get("bids"):
+            print(f"  Best bid: {book['bids'][0]}")
+        if book.get("asks"):
             print(f"  Best ask: {book['asks'][0]}")
-        if 'mid' in book:
-            print(f"  Midpoint: {book['mid']}")
 
         return True
 
@@ -129,48 +186,33 @@ def test_clob_book():
         return False
 
 
-def test_clob_price():
-    """Test CLOB API price endpoint."""
+def test_clob_price_and_midpoint():
+    """Test CLOB API price and midpoint endpoints (live, single token)."""
     print("\n" + "=" * 80)
-    print("TEST 3: CLOB API - Price")
+    print("TEST 4: CLOB API - Price and Midpoint")
     print("=" * 80)
 
     try:
-        # Get a token ID
-        print("Step 1: Fetching a market...")
-        resp_markets = httpx.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"limit": 1, "active": True},
-            timeout=10
-        )
-        resp_markets.raise_for_status()
-
-        markets = resp_markets.json()
-        if not markets:
-            print("✗ No markets returned")
+        market, token_id = _first_token_id()
+        if market is None:
+            print("✗ No active markets found")
             return False
-
-        import json as _json
-        market = markets[0]
-        token_ids = _json.loads(market.get('clobTokenIds', '[]'))
-        if not token_ids:
-            print(f"✗ No CLOB token IDs. Available: {list(market.keys())}")
+        if not token_id:
+            print(f"✗ No CLOB token IDs. Available keys: {list(market.keys())}")
             return False
+        print(f"✓ Token ID: {str(token_id)[:20]}...")
 
-        token_id = token_ids[0]
-        print(f"✓ Token ID: {token_id[:20]}...")
-
-        # Fetch price
-        print(f"\nStep 2: Fetching price for both sides...")
+        print(f"\nStep 1: Fetching price for both sides...")
         for side in ["BUY", "SELL"]:
-            resp = httpx.get(
-                "https://clob.polymarket.com/price",
-                params={"token_id": token_id, "side": side},
-                timeout=10
-            )
+            resp = httpx.get(f"{CLOB}/price",
+                             params={"token_id": token_id, "side": side}, timeout=10)
             resp.raise_for_status()
-            price = resp.json()
-            print(f"  {side}: {price}")
+            print(f"  {side}: {resp.json()}")
+
+        print(f"\nStep 2: Fetching midpoint...")
+        resp = httpx.get(f"{CLOB}/midpoint", params={"token_id": token_id}, timeout=10)
+        resp.raise_for_status()
+        print(f"  midpoint: {resp.json()}")
 
         return True
 
@@ -190,8 +232,9 @@ def main():
 
     results = {
         "Gamma Markets": test_gamma_markets(),
+        "CLOB Prices-History": test_clob_prices_history(),
         "CLOB Book": test_clob_book(),
-        "CLOB Price": test_clob_price(),
+        "CLOB Price/Midpoint": test_clob_price_and_midpoint(),
     }
 
     print("\n" + "=" * 80)
@@ -204,7 +247,8 @@ def main():
     all_pass = all(results.values())
     if all_pass:
         print("\n✓ All tests passed. APIs are live and responding.")
-        print("✓ You can now run: python -m polytester.data_layer --sync-all")
+        print("✓ You can now run: python -m polytester.data_layer "
+              "--sync-all --interval max --fidelity 60 --max-markets 200")
     else:
         print("\n✗ Some tests failed. Check output above.")
         print("✗ Possible reasons:")
