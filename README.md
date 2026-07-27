@@ -79,10 +79,17 @@ Each price bar from `prices-history` is treated as one tick (`backtest_runner._p
 
 ### Position settlement
 
-At market resolution:
-- Winning outcome: $1 per unit
-- Losing outcome: $0 per unit
-- No intermediate exit logic; buy-and-hold is the default
+Each share settles at a **price** of $1 (winning outcome) or $0 (losing
+outcome). Your **PnL is always measured against what you paid** — it is
+`(settle_price − entry_price) × size`, not the settle price itself:
+
+- Buy YES at **0.60**, it **wins** → settle $1.00 → PnL = (1.00 − 0.60) = **+0.40 / share** (profit)
+- Buy YES at **0.60**, it **loses** → settle $0.00 → PnL = (0.00 − 0.60) = **−0.60 / share** (loss)
+
+So a losing bet **is** a negative PnL — $0 is not breakeven, it's total loss of
+the stake. $1/$0 are the two possible settlement *prices* of a share, not the
+profit. No intermediate exit logic in the buy-and-hold baseline; see the
+`PriceTrader` example and HARNESS_GUIDE §5b for exiting mid-market.
 
 ### Profitability metrics
 
