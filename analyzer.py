@@ -16,7 +16,10 @@ def calculate_metrics(deals_df: pd.DataFrame) -> Dict:
             'pf': 0,
             'max_dd': 0,
             'sharpe': 0,
+            'sharpe_per_trade': 0,
             'win_rate': 0,
+            'n_trades': 0,
+            'trades_per_year': 0,
         }
 
     # Profit factor
@@ -41,18 +44,38 @@ def calculate_metrics(deals_df: pd.DataFrame) -> Dict:
         dd = (running_max - bal) / running_max if running_max > 0 else 0
         max_dd = max(max_dd, dd)
 
-    # Sharpe ratio
+    # Sharpe. The per-TRADE Sharpe is assumption-free: mean/sd of per-deal PnL.
+    # Annualising it needs a real trade RATE. This used to multiply by sqrt(252),
+    # which silently assumes exactly one deal per trading day — badly wrong here,
+    # where hundreds of markets can resolve inside a few weeks (it overstated Sharpe
+    # by sqrt(actual_trades_per_year/252)). Derive the rate from the deal timestamps.
     returns = deals_df['pnl'].values
-    if len(returns) > 1 and returns.std() > 0:
-        sharpe = (returns.mean() / returns.std()) * (252 ** 0.5)
-    else:
-        sharpe = 0
+    sharpe_pt = 0.0
+    if len(returns) > 1 and returns.std(ddof=1) > 0:
+        sharpe_pt = returns.mean() / returns.std(ddof=1)
+
+    trades_per_year = 0.0
+    ts_col = next((c for c in ('exit_ts', 'entry_ts') if c in deals_df.columns), None)
+    if ts_col is not None and len(deals_df) > 1:
+        ts = pd.to_numeric(deals_df[ts_col], errors='coerce').dropna()
+        span_days = (ts.max() - ts.min()) / 86400.0
+        if span_days > 0:
+            trades_per_year = len(ts) * 365.0 / span_days
+
+    # Note: this treats trades as independent draws. On Polymarket they are NOT --
+    # markets on the same event/day are correlated, so the effective count is lower
+    # and this annualised figure is an UPPER BOUND. Measure effective breadth before
+    # trusting it.
+    sharpe = sharpe_pt * (trades_per_year ** 0.5) if trades_per_year > 0 else 0.0
 
     return {
         'pf': round(pf, 2),
         'max_dd': round(max_dd, 3),
         'sharpe': round(sharpe, 2),
+        'sharpe_per_trade': round(sharpe_pt, 4),
         'win_rate': round(win_rate, 2),
+        'n_trades': int(len(deals_df)),
+        'trades_per_year': round(trades_per_year, 1),
     }
 
 

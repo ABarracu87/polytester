@@ -93,8 +93,13 @@ class Simulator:
         size = order.size
         side = order.side
 
-        # Slipped fill price
-        fill_price = current_price + self.bid_ask if side == 'BUY' else current_price - self.bid_ask
+        # Slipped fill price. The modeled half-spread must not exceed the headroom to
+        # the nearest bound: on a sub-penny market a flat 0.5c slip is larger than the
+        # whole contract price, which silently invents a cost bigger than the position
+        # and can push a fill outside (0,1). Cap at half the available headroom.
+        headroom = (1.0 - current_price) if side == 'BUY' else current_price
+        slip = min(self.bid_ask, max(headroom * 0.5, 0.0))
+        fill_price = current_price + slip if side == 'BUY' else current_price - slip
 
         existing = self.positions.get(outcome)
 

@@ -46,16 +46,29 @@ def test_live_pipeline():
     assert resolved, "No markets resolved to a known outcome"
     print(f"✓ {len(resolved)} resolved with a known winning outcome")
 
-    # Pull prices for the first resolved market with clob tokens
-    target = None
-    for m in resolved:
-        if _loads(m["clob_token_ids"]):
+    # Pull prices for a resolved market with clob tokens.
+    #
+    # IMPORTANT (measured 2026-08-05): having clob_token_ids does NOT imply price
+    # history exists. Polymarket's CLOB /prices-history returns HTTP 200 with an
+    # EMPTY history for markets resolved past a recency window — verified on 1,197
+    # of 1,317 resolved politics/election markets, with a single network timeout in
+    # the entire sync, so it is a data-availability limit, not throttling.
+    # This test therefore walks candidates rather than asserting on the first one,
+    # which would fail whenever the cache holds older markets.
+    candidates = [m for m in resolved if _loads(m["clob_token_ids"])]
+    assert candidates, "No resolved market had clob token ids"
+
+    target, pts = None, []
+    for m in candidates[:25]:
+        pts = dl.fetch_prices(m["market_id"], interval="max", fidelity=60)
+        if pts:
             target = m
             break
-    assert target, "No resolved market had clob token ids"
-
-    pts = dl.fetch_prices(target["market_id"], interval="max", fidelity=60)
-    assert pts, f"prices-history returned nothing for {target['question'][:40]}"
+    assert target, (
+        f"prices-history returned nothing for any of {min(25, len(candidates))} "
+        "resolved markets tried. Expected if the cache holds only markets resolved "
+        "outside the CLOB's recency window — re-sync recent markets."
+    )
     print(f"✓ Pulled {len(pts)} price points for: {target['question'][:50]}")
 
     # Prices must be probabilities in [0,1]

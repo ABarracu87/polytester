@@ -33,6 +33,8 @@ def run_backtest(
     end: str,
     initial_cash: float = 10000,
     timeout_sec: float = 300,
+    use_real_spread: bool = False,
+    bid_ask_cents: float = 0.5,
 ) -> Dict:
     """
     Run backtest across multiple markets.
@@ -71,7 +73,19 @@ def run_backtest(
             continue
 
         strategy = strategy_class(market_id, initial_cash)
-        sim = Simulator(strategy, market_id, initial_cash)
+
+        # Cost model. The default 0.5c/side is a fixed guess; Gamma reports each
+        # market's own quoted spread (median 0.0010 = 0.1c, i.e. 5x tighter), so
+        # use_real_spread=True is the honest setting where that field is populated.
+        # Gamma's `spread` is the FULL bid-ask, and the simulator applies bid_ask as
+        # a per-side slip, so halve it.
+        cents = bid_ask_cents
+        if use_real_spread:
+            raw = market_meta.get('spread') if isinstance(market_meta, dict) else None
+            if raw is not None and 0 < float(raw) < 1:
+                cents = float(raw) * 100 / 2
+
+        sim = Simulator(strategy, market_id, initial_cash, bid_ask_cents=cents)
 
         outcomes = json.loads(market_meta['outcomes'] or '[]')
 
@@ -89,24 +103,22 @@ def run_backtest(
         all_deals.extend(results['deals'].to_dict('records'))
         total_pnl += (results['final_balance'] - initial_cash)
 
-    # Aggregate
-    if all_deals:
-        deals_df = pd.DataFrame(all_deals)
-        gross_profit = deals_df[deals_df['pnl'] > 0]['pnl'].sum()
-        gross_loss = -deals_df[deals_df['pnl'] < 0]['pnl'].sum()
-        pf = gross_profit / gross_loss if gross_loss > 0 else 0
-        win_rate = (deals_df['pnl'] > 0).sum() / len(deals_df) if len(deals_df) > 0 else 0
-    else:
-        deals_df = pd.DataFrame()
-        pf = 0
-        win_rate = 0
+    # Aggregate. Metrics come from analyzer.calculate_metrics so there is ONE
+    # implementation; max_dd and sharpe used to be hardcoded 0 here, which silently
+    # made any result read through this function unscoreable.
+    # Local import: analyzer imports run_backtest, so a module-level import cycles.
+    from polytester.analyzer import calculate_metrics
+
+    deals_df = pd.DataFrame(all_deals) if all_deals else pd.DataFrame()
+    metrics = calculate_metrics(deals_df)
 
     return {
-        'pf': round(pf, 2),
-        'max_dd': 0,  # TODO: implement across all deals
-        'sharpe': 0,  # TODO: implement across all deals
+        'pf': metrics['pf'],
+        'max_dd': metrics['max_dd'],
+        'sharpe': metrics['sharpe'],
+        'sharpe_per_trade': metrics['sharpe_per_trade'],
         'total_trades': len(deals_df),
-        'win_rate': round(win_rate, 2),
+        'win_rate': metrics['win_rate'],
         'final_balance': initial_cash + total_pnl,
         'deals': deals_df,
     }
