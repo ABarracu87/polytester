@@ -301,11 +301,23 @@ def sync_all(interval: str = "max", fidelity: int = 60, max_markets: int = 200,
 
     resolved = dl.list_markets(resolved_only=True)
     if only_new:
-        # Skip markets that already have price rows, so re-running is cheap and
-        # incremental instead of re-pulling the whole cache every time.
+        # Skip markets already ATTEMPTED, not merely those that already have rows.
+        #
+        # Polymarket's free /prices-history is a ~2-MONTH ROLLING WINDOW: markets
+        # resolved before it return HTTP 200 with an empty history, permanently.
+        # Measured 2026-08-05: of 4,575 resolved markets only 564 had any history, all
+        # resolving 2026-06..2026-08, while the 4,011 without spanned 2022-2027.
+        # Keying "todo" on the prices table alone therefore re-requests those 4,011
+        # known-empty markets on EVERY run, forever. Record the attempt instead.
+        dl.db.execute("CREATE TABLE IF NOT EXISTS price_fetch_log ("
+                      "market_id TEXT PRIMARY KEY, fetched_at INTEGER, n_points INTEGER)")
+        dl.db.commit()
+        tried = {r[0] for r in dl.db.execute("SELECT market_id FROM price_fetch_log")}
         have = {r[0] for r in dl.db.execute("SELECT DISTINCT market_id FROM prices")}
-        todo = [m for m in resolved if m["market_id"] not in have]
-        print(f"{len(resolved)} resolved in cache; {len(todo)} still need price history")
+        skip = tried | have
+        todo = [m for m in resolved if m["market_id"] not in skip]
+        print(f"{len(resolved)} resolved in cache; {len(have)} have history, "
+              f"{len(tried - have)} known-empty (skipped); {len(todo)} to fetch")
     else:
         todo = resolved
         print(f"{len(resolved)} have a known winning outcome; pulling price history...")
@@ -313,7 +325,12 @@ def sync_all(interval: str = "max", fidelity: int = 60, max_markets: int = 200,
     for i, m in enumerate(todo):
         if i % 50 == 0:
             print(f"  {i}/{len(todo)}", flush=True)
-        dl.fetch_prices(m["market_id"], interval=interval, fidelity=fidelity)
+        pts = dl.fetch_prices(m["market_id"], interval=interval, fidelity=fidelity)
+        if only_new:
+            dl.db.execute(
+                "INSERT OR REPLACE INTO price_fetch_log VALUES (?, ?, ?)",
+                (m["market_id"], int(time.time()), len(pts)))
+            dl.db.commit()
         time.sleep(0.05)  # ponytail: fixed throttle, swap for backoff if 429s appear
     print("Sync complete")
     return dl
